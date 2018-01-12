@@ -10,13 +10,9 @@ import (
 	"github.com/alexellis/blinkt_go/sysfs/gpio"
 )
 
-const DAT int = 23
-const CLK int = 24
-
-const redIndex int = 0
-const greenIndex int = 1
-const blueIndex int = 2
-const brightnessIndex int = 3
+const DAT = "23"
+const CLK = "24"
+const PIXEL_START = 224 // 0b11100000 (224)
 
 // default raw brightness.  Not to be used user-side
 const defaultBrightnessInt int = 15
@@ -28,10 +24,10 @@ const maxBrightness float64 = 1.0
 func writeByte(val int) {
 	for i := 0; i < 8; i++ {
 		// 0b10000000 = 128
-		gpio.DigitalWrite(gpio.GpioToPin(DAT), val&128)
-		gpio.DigitalWrite(gpio.GpioToPin(CLK), 1)
+		gpio.DigitalWrite(DAT, val&128)
+		gpio.DigitalWriteString(CLK, "1")
 		val = val << 1
-		gpio.DigitalWrite(gpio.GpioToPin(CLK), 0)
+		gpio.DigitalWriteString(CLK, "0")
 	}
 }
 
@@ -61,9 +57,7 @@ func (bl *Blinkt) SetClearOnExit(clearOnExit bool) {
 
 		go func() {
 			for range signalChan {
-				bl.Clear()
-				bl.Show()
-				gpio.Cleanup()
+				bl.Close()
 				os.Exit(1)
 			}
 		}()
@@ -77,32 +71,64 @@ func Delay(ms int) {
 
 // Clear sets all the pixels to off, you still have to call Show.
 func (bl *Blinkt) Clear() {
-	r := 0
-	g := 0
-	b := 0
-	bl.SetAll(r, g, b)
+	bl.SetAll(0, 0, 0)
+}
+
+func (bl *Blinkt) Close() {
+	bl.Clear()
+	bl.Show()
+	gpio.Cleanup()
 }
 
 // Show updates the LEDs with the values from SetPixel/Clear.
 func (bl *Blinkt) Show() {
-	for i := 0; i < 4; i++ {
-		writeByte(0)
+	pixelsChanged := false
+	for i, pixel := range bl.pixels {
+		if bl.previousPixels[i] != pixel {
+			pixelsChanged = true
+			break
+		}
+	}
+	if !pixelsChanged {
+		return
 	}
 
-	for p, _ := range bl.pixels {
-		brightness := bl.pixels[p][brightnessIndex]
-		r := bl.pixels[p][redIndex]
-		g := bl.pixels[p][greenIndex]
-		b := bl.pixels[p][blueIndex]
-
-		// 0b11100000 (224)
-		bitwise := 224
-		writeByte(bitwise | brightness)
-		writeByte(b)
-		writeByte(g)
-		writeByte(r)
+	sof()
+	pixels := bl.pixels
+	for p, _ := range pixels {
+		pixel := bl.pixels[p]
+		writeByte(PIXEL_START | pixel.Brightness)
+		writeByte(pixel.B)
+		writeByte(pixel.G)
+		writeByte(pixel.R)
 	}
-	writeByte(255) // 0xff = 255
+	eof()
+	bl.previousPixels = pixels
+}
+
+func sof() {
+	gpio.DigitalWriteString(DAT, "0")
+	//gpio.DigitalWriteString(CLK, "1010101010101010101010101010101010101010101010101010101010101010")
+	for i := 0; i < 32; i++ {
+		gpio.DigitalWriteString(CLK, "1")
+		gpio.DigitalWriteString(CLK, "0")
+	}
+
+	//for i := 0; i < 4; i++ {
+	//	writeByte(0)
+	//}
+}
+
+func eof() {
+	gpio.DigitalWriteString(DAT, "0")
+	//gpio.DigitalWriteString(CLK, "101010101010101010101010101010101010101010101010101010101010101010101010")
+	for i := 0; i < 36; i++ {
+		gpio.DigitalWriteString(CLK, "1")
+		gpio.DigitalWriteString(CLK, "0")
+	}
+
+	//writeByte(255)
+	// 0xff = 255
 }
 
 // SetAll sets all pixels to specified r, g, b colour. Show must be called to update the LEDs.
@@ -117,13 +143,10 @@ func (bl *Blinkt) SetAll(r int, g int, b int) *Blinkt {
 
 // SetPixel sets an individual pixel to specified r, g, b colour. Show must be called to update the LEDs.
 func (bl *Blinkt) SetPixel(p int, r int, g int, b int) *Blinkt {
-
-	bl.pixels[p][redIndex] = r
-	bl.pixels[p][greenIndex] = g
-	bl.pixels[p][blueIndex] = b
-
+	bl.pixels[p].R = r
+	bl.pixels[p].G = g
+	bl.pixels[p].B = b
 	return bl
-
 }
 
 // SetBrightness sets the brightness of all pixels. Brightness supplied should be between: 0.0 to 1.0
@@ -132,7 +155,7 @@ func (bl *Blinkt) SetBrightness(brightness float64) *Blinkt {
 	brightnessInt := convertBrightnessToInt(brightness)
 
 	for p, _ := range bl.pixels {
-		bl.pixels[p][brightnessIndex] = brightnessInt
+		bl.pixels[p].Brightness = brightnessInt
 	}
 
 	return bl
@@ -142,19 +165,14 @@ func (bl *Blinkt) SetBrightness(brightness float64) *Blinkt {
 func (bl *Blinkt) SetPixelBrightness(p int, brightness float64) *Blinkt {
 
 	brightnessInt := convertBrightnessToInt(brightness)
-	bl.pixels[p][brightnessIndex] = brightnessInt
+	bl.pixels[p].Brightness = brightnessInt
 	return bl
 }
 
-func initPixels(brightness int) [8][4]int {
-	var pixels [8][4]int
+func initPixels(brightness int) [8]Pixel {
+	var pixels [8]Pixel
 	for p, _ := range pixels {
-
-		pixels[p][redIndex] = 0
-		pixels[p][greenIndex] = 0
-		pixels[p][blueIndex] = 0
-		pixels[p][brightnessIndex] = brightness
-
+		pixels[p] = Pixel{0, 0, 0, brightness}
 	}
 	return pixels
 }
@@ -162,8 +180,8 @@ func initPixels(brightness int) [8][4]int {
 // Setup initializes GPIO via WiringPi base library.
 func (bl *Blinkt) Setup() {
 	gpio.Setup()
-	gpio.PinMode(gpio.GpioToPin(DAT), gpio.OUTPUT)
-	gpio.PinMode(gpio.GpioToPin(CLK), gpio.OUTPUT)
+	gpio.PinMode(DAT, gpio.OUTPUT)
+	gpio.PinMode(CLK, gpio.OUTPUT)
 }
 
 // NewBlinkt creates a Blinkt to interact with. You must call "Setup()" immediately afterwards.
@@ -183,7 +201,12 @@ func NewBlinkt(brightness ...float64) Blinkt {
 
 // Blinkt use the NewBlinkt function to initialize the pixels property.
 type Blinkt struct {
-	pixels [8][4]int
+	pixels         [8]Pixel
+	previousPixels [8]Pixel
+}
+
+type Pixel struct {
+	R, G, B, Brightness int
 }
 
 func init() {

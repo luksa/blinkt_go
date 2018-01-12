@@ -23,43 +23,41 @@ func Setup() {
 
 func Cleanup() {
 	for k, v := range gpioPins {
-		val, _ := strconv.Atoi(k)
 		fmt.Println("Cleaning up " + k)
 		v.directionFd.Close()
 		v.valueFd.Close()
 
-		unexport(val)
+		unexport(k)
 	}
 }
 
-func export(pin int) {
+func export(pin string) {
 	path := "/sys/class/gpio/export"
-	bytesToWrite := []byte(strconv.Itoa(pin))
+	bytesToWrite := []byte(pin)
 	writeErr := ioutil.WriteFile(path, bytesToWrite, 0644)
 	if writeErr != nil {
 		log.Panic(writeErr)
 	}
 }
 
-func unexport(pin int) {
+func unexport(pin string) {
 	path := "/sys/class/gpio/unexport"
-	bytesToWrite := []byte(strconv.Itoa(pin))
+	bytesToWrite := []byte(pin)
 	writeErr := ioutil.WriteFile(path, bytesToWrite, 0644)
 	if writeErr != nil {
 		log.Panic(writeErr)
 	}
 }
 
-func pinExported(pin int) bool {
-	pinPath := fmt.Sprintf("/sys/class/gpio/gpio%d", pin)
+func pinExported(pin string) bool {
+	pinPath := fmt.Sprintf("/sys/class/gpio/gpio%s", pin)
 	if file, err := os.Stat(pinPath); err == nil && len(file.Name()) > 0 {
 		return true
 	}
 	return false
 }
 
-func PinMode(pin int, val int) {
-	pinName := strconv.Itoa(pin)
+func PinMode(pin string, val int) {
 
 	exported := pinExported(pin)
 	if val == OUTPUT {
@@ -72,9 +70,9 @@ func PinMode(pin int, val int) {
 		}
 	}
 
-	_, exists := gpioPins[pinName]
+	_, exists := gpioPins[pin]
 	if exists == false {
-		pinPath := fmt.Sprintf("/sys/class/gpio/gpio%d", pin)
+		pinPath := fmt.Sprintf("/sys/class/gpio/gpio%s", pin)
 		valueFd, openErr := os.OpenFile(pinPath+"/value", os.O_WRONLY, 0640)
 		if openErr != nil {
 			log.Panic(openErr, pinPath)
@@ -83,35 +81,27 @@ func PinMode(pin int, val int) {
 		if openErr != nil {
 			log.Panic(openErr, pinPath)
 		}
-		gpioPins[pinName] = gpioPin{
+		gpioPins[pin] = gpioPin{
 			valueFd:     valueFd,
 			directionFd: directionFd,
 		}
 		if val == OUTPUT {
-			pinDigitalWrite(pin, "out", "direction")
+			_, err := gpioPins[pin].directionFd.Write([]byte("out"))
+			if err != nil {
+				log.Panic(err, fmt.Sprintf("Pin: %s Mode: %s Value: %s ", pin, "direction", val))
+			}
+
 		}
 	}
 }
 
-func GpioToPin(pin int) int {
-	return pin
+func DigitalWrite(pin string, val int) {
+	DigitalWriteString(pin, strconv.Itoa(val))
 }
 
-func DigitalWrite(pin int, val int) {
-	pinDigitalWrite(pin, strconv.Itoa(val), "value")
-}
-
-func pinDigitalWrite(pin int, val string, mode string) {
-	pinName := strconv.Itoa(pin)
-	var err error
-	if mode == "direction" {
-		_, err = gpioPins[pinName].directionFd.Write([]byte(val))
-	} else {
-		_, err = gpioPins[pinName].valueFd.Write([]byte(val))
-	}
-
+func DigitalWriteString(pin string, val string) {
+	_, err := gpioPins[pin].valueFd.Write([]byte(val))
 	if err != nil {
-		log.Panic(err, fmt.Sprintf("Pin: %s Mode: %s Value: %s ", pinName, val, mode))
+		log.Panic(err, fmt.Sprintf("Pin: %s Mode: %s Value: %s ", pin, "value", val))
 	}
 }
-
